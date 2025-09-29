@@ -1,0 +1,141 @@
+import requests
+from bs4 import BeautifulSoup
+from collections import defaultdict
+import re
+import os
+from urllib.parse import urljoin
+
+def parse_misra_report(url, output_file="misra_report.html"):
+    ignore_paths = [
+        "firmware/src/config/sam_e54_xpro/library/cryptoauthlib"
+    ]
+
+    response = requests.get(url)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    rows = soup.find_all("tr")[1:]
+    violations = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {"lines": [], "events": []})))
+
+    # --- pass 1: collect violations from main table ---
+    for row in rows:
+        cols = row.find_all(["td", "th"])
+        if len(cols) < 6:
+            continue
+
+        rule = cols[1].get_text(strip=True)
+        category = cols[2].get_text(strip=True)
+        file = cols[3].get_text(strip=True)
+        line = cols[4].get_text(strip=True)
+
+        if any(p in file for p in ignore_paths):
+            continue
+
+        if line.isdigit():
+            violations[category][rule][file]["lines"].append(int(line))
+
+            # find if this cell contains a link to detail page
+            file_link = cols[3].find("a")
+            if file_link and "href" in file_link.attrs:
+                violations[category][rule][file]["href"] = urljoin(url, file_link["href"])
+
+    # --- pass 2: fetch detail pages for events ---
+    for category, rules in violations.items():
+        for rule, files in rules.items():
+            for file, data in files.items():
+                detail_url = data.get("href")
+                if not detail_url:
+                    continue
+
+                try:
+                    resp = requests.get(detail_url)
+                    resp.raise_for_status()
+                    detail_soup = BeautifulSoup(resp.text, "html.parser")
+
+                    # parse <table summary="events">
+                    event_tables = detail_soup.find_all("table", summary="events")
+                    for et in event_tables:
+                        for tr in et.find_all("tr"):
+                            tds = tr.find_all("td")
+                            if len(tds) >= 2:
+                                event_id = tds[0].get_text(strip=True)
+                                reason = tds[1].get_text(strip=True)
+                                data["events"].append(f"{event_id}: {reason}")
+                except Exception as e:
+                    print(f"⚠️ Could not fetch detail page for {file}: {e}")
+
+    # --- sorting helpers ---
+    def extract_rule_num(rule_str):
+        match = re.search(r"Rule\s+(\d+(?:\.\d+)?)", rule_str)
+        return float(match.group(1)) if match else float("inf")
+
+    category_order = {"Mandatory": 0, "Required": 1}
+
+    details_folder = "details"
+    os.makedirs(details_folder, exist_ok=True)
+
+    # --- generate consolidated HTML ---
+    html_content = """
+    <html>
+    <head>
+        <title>MISRA Consolidated Report</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+            th, td { border: 1px solid #999; padding: 8px; text-align: left; }
+            th { background-color: #f2f2f2; }
+            h2 { margin-top: 30px; }
+        </style>
+    </head>
+    <body>
+        <h1>MISRA Consolidated Report</h1>
+    """
+
+    serial = 1
+    for category in sorted(violations.keys(), key=lambda c: category_order.get(c, 99)):
+        html_content += f"<h1>{category} Violations</h1>"
+
+        sorted_rules = sorted(violations[category].items(), key=lambda x: extract_rule_num(x[0]))
+
+        for rule, files in sorted_rules:
+            html_content += f"<h2>{serial}. {rule}</h2>"
+            html_content += "<table>"
+            html_content += "<tr><th>File</th><th>Line Numbers</th></tr>"
+
+            for file, data in files.items():
+                lines_str = ", ".join(map(str, sorted(data["lines"])))
+
+                safe_name = re.sub(r"[^a-zA-Z0-9]+", "_", file)
+                detail_page = f"{details_folder}/{safe_name}_{serial}.html"
+
+                html_content += f"<tr><td><a href='{detail_page}'>{file}</a></td><td>{lines_str}</td></tr>"
+
+                # build detail page
+                with open(detail_page, "w", encoding="utf-8") as df:
+                    df.write(f"<html><head><title>Details for {file}</title></head><body>")
+                    df.write(f"<h1>Rule: {rule}</h1>")
+                    df.write(f"<h2>File: {file}</h2>")
+                    df.write(f"<p>Line Numbers: {lines_str}</p>")
+                    df.write("<h3>Reasons</h3><table border='1' cellpadding='5'>")
+                    df.write("<tr><th>Event</th></tr>")
+                    for ev in data["events"]:
+                        df.write(f"<tr><td>{ev}</td></tr>")
+                    if not data["events"]:
+                        df.write("<tr><td>No reasons found</td></tr>")
+                    df.write("</table></body></html>")
+
+            html_content += "</table>"
+            serial += 1
+
+    html_content += "</body></html>"
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(html_content)
+
+    print(f"✅ Consolidated report: {output_file}")
+    print(f"✅ Detail pages in: {details_folder}/")
+
+
+if __name__ == "__main__":
+    url = input("Enter the MISRA HTML report URL: ").strip()
+    parse_misra_report(url)
