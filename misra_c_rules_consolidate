@@ -74,7 +74,7 @@ def parse_misra_report(url, output_file="misra_report.html"):
     details_folder = "details"
     os.makedirs(details_folder, exist_ok=True)
 
-    # --- generate consolidated HTML ---
+    # --- generate consolidated HTML with collapsible rules ---
     html_content = """
     <html>
     <head>
@@ -84,7 +84,8 @@ def parse_misra_report(url, output_file="misra_report.html"):
             table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
             th, td { border: 1px solid #999; padding: 8px; text-align: left; }
             th { background-color: #f2f2f2; }
-            h2 { margin-top: 30px; }
+            summary { font-weight: bold; cursor: pointer; }
+            details { margin-bottom: 10px; }
         </style>
     </head>
     <body>
@@ -98,7 +99,9 @@ def parse_misra_report(url, output_file="misra_report.html"):
         sorted_rules = sorted(violations[category].items(), key=lambda x: extract_rule_num(x[0]))
 
         for rule, files in sorted_rules:
-            html_content += f"<h2>{serial}. {rule}</h2>"
+            # Collapsible section per rule
+            html_content += f"<details>"
+            html_content += f"<summary>{serial}. {rule}</summary>"
             html_content += "<table>"
             html_content += "<tr><th>File</th><th>Line Numbers</th></tr>"
 
@@ -108,9 +111,10 @@ def parse_misra_report(url, output_file="misra_report.html"):
                 safe_name = re.sub(r"[^a-zA-Z0-9]+", "_", file)
                 detail_page = f"{details_folder}/{safe_name}_{serial}.html"
 
-                html_content += f"<tr><td><a href='{detail_page}'>{file}</a></td><td>{lines_str}</td></tr>"
+                # File link
+                html_content += f"<tr><td><a href='{detail_page}' target='_blank'>{file}</a></td><td>{lines_str}</td></tr>"
 
-                # build detail page
+                # Build detail page
                 with open(detail_page, "w", encoding="utf-8") as df:
                     df.write(f"<html><head><title>Details for {file}</title></head><body>")
                     df.write(f"<h1>Rule: {rule}</h1>")
@@ -124,7 +128,7 @@ def parse_misra_report(url, output_file="misra_report.html"):
                         df.write("<tr><td>No reasons found</td></tr>")
                     df.write("</table></body></html>")
 
-            html_content += "</table>"
+            html_content += "</table></details>"
             serial += 1
 
     html_content += "</body></html>"
